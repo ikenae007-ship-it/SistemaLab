@@ -504,6 +504,17 @@ def calcular_materiais_pratica(pratica_id: int, id_lab: int, qtd_alunos: int, me
     return resultado
 
 
+def atualizar_pratica(id_pratica: int, disciplina: str, titulo: str, descricao: str, materiais: list):
+    """Atualiza uma prática existente."""
+    with conectar() as conn:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE praticas SET disciplina = ?, titulo = ?, descricao = ?, materiais = ? WHERE id = ?",
+            (disciplina, titulo, descricao, json.dumps(materiais, ensure_ascii=False), id_pratica),
+        )
+        return c.rowcount > 0
+
+
 def processar_baixa_estoque_real(id_agendamento, materiais_usados):
     try:
         with conectar() as conn:

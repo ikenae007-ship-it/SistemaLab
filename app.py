@@ -497,9 +497,59 @@ else:
         uploaded = st.file_uploader("Escolha um arquivo .csv ou .json", type=["csv", "json"])
         if uploaded is not None:
             content = uploaded.getvalue()
+            # Validação básica antes de importar
             try:
-                n = core.importar_praticas_arquivo(content, uploaded.name)
-                st.success(f"Importadas {n} práticas com sucesso.")
+                name_l = (uploaded.name or "").lower()
+                text = None
+                try:
+                    text = content.decode("utf-8")
+                except Exception:
+                    text = content.decode("latin-1")
+
+                valid = True
+                errors = []
+                if name_l.endswith(".json") or text.strip().startswith("["):
+                    try:
+                        parsed = json.loads(text)
+                        if not isinstance(parsed, list):
+                            valid = False
+                            errors.append("JSON deve ser um array de práticas.")
+                        else:
+                            for idx, p in enumerate(parsed):
+                                if not p.get("disciplina") or not p.get("titulo"):
+                                    valid = False
+                                    errors.append(f"Prática no índice {idx} precisa de 'disciplina' e 'titulo'.")
+                                mats = p.get("materiais") or []
+                                if not isinstance(mats, list) or any(not m.get("nome") for m in mats):
+                                    valid = False
+                                    errors.append(f"Prática no índice {idx} tem materiais inválidos (cada material precisa de 'nome').")
+                    except Exception as e:
+                        valid = False
+                        errors.append(f"JSON inválido: {e}")
+                else:
+                    # CSV: validar cabeçalhos mínimos
+                    import csv as _csv, io as _io
+
+                    f = _io.StringIO(text)
+                    try:
+                        reader = _csv.DictReader(f)
+                        headers = reader.fieldnames or []
+                        needed = ["disciplina", "titulo", "material_nome"]
+                        for h in needed:
+                            if h not in headers:
+                                valid = False
+                                errors.append(f"CSV faltando coluna obrigatória: {h}")
+                                break
+                    except Exception as e:
+                        valid = False
+                        errors.append(f"CSV inválido: {e}")
+
+                if not valid:
+                    for e in errors:
+                        st.error(e)
+                else:
+                    n = core.importar_praticas_arquivo(content, uploaded.name)
+                    st.success(f"Importadas {n} práticas com sucesso.")
             except Exception as e:
                 st.error(f"Falha ao importar: {e}")
 
@@ -514,6 +564,72 @@ else:
                 st.write(p.get("descricao", ""))
                 st.markdown("**Materiais (lista):**")
                 st.write(p.get("materiais", []))
+
+                # Expander para edição da prática
+                with st.expander("✏️ Editar prática"):
+                    if "edit_rows" not in st.session_state:
+                        st.session_state.edit_rows = [i for i, _ in enumerate(p.get("materiais", []) or [0])]
+
+                    with st.form(f"form_edit_pratica_{pid}"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            e_disc = st.text_input("Disciplina", value=p.get("disciplina") or "")
+                            e_tit = st.text_input("Título", value=p.get("titulo") or "")
+                        with col2:
+                            e_desc = st.text_area("Descrição", value=p.get("descricao") or "", height=80)
+
+                        # materiais editáveis
+                        to_del = None
+                        for i in st.session_state.edit_rows:
+                            mat = (p.get("materiais") or [])[i] if i < len(p.get("materiais") or []) else {}
+                            cols = st.columns([3, 1, 1, 1, 0.5])
+                            name_m = cols[0].text_input("Nome", value=mat.get("nome", ""), key=f"e_mat_nome_{pid}_{i}")
+                            unit_m = cols[1].text_input("Unidade", value=mat.get("unidade", "un"), key=f"e_mat_un_{pid}_{i}")
+                            por_m = cols[2].selectbox("Por", ["aluno", "bancada"], index=0 if mat.get("por","aluno")=="aluno" else 1, key=f"e_mat_por_{pid}_{i}")
+                            q_m = cols[3].number_input("Qtd", min_value=0.0, value=float(mat.get("qtd_por_aluno") or mat.get("qtd_por_bancada") or 0.0), key=f"e_mat_q_{pid}_{i}")
+                            if cols[4].button("🗑️", key=f"e_mat_del_{pid}_{i}"):
+                                to_del = i
+
+                        if to_del is not None:
+                            st.session_state.edit_rows.remove(to_del)
+                            st.experimental_rerun()
+
+                        col_a, col_b = st.columns([1, 1])
+                        if col_a.button("➕ Adicionar material (edição)"):
+                            st.session_state.edit_rows.append(max(st.session_state.edit_rows + [0]) + 1)
+                            st.experimental_rerun()
+
+                        if col_b.form_submit_button("Salvar alterações"):
+                            # coletar materiais editados
+                            mats_edit = []
+                            for i in st.session_state.edit_rows:
+                                nm = st.session_state.get(f"e_mat_nome_{pid}_{i}", "").strip()
+                                if not nm:
+                                    continue
+                                un = st.session_state.get(f"e_mat_un_{pid}_{i}", "un")
+                                porv = st.session_state.get(f"e_mat_por_{pid}_{i}", "aluno")
+                                qv = float(st.session_state.get(f"e_mat_q_{pid}_{i}", 0.0) or 0.0)
+                                mobj = {"nome": nm, "unidade": un, "por": porv}
+                                if porv == "aluno":
+                                    mobj["qtd_por_aluno"] = qv
+                                else:
+                                    mobj["qtd_por_bancada"] = qv
+                                mats_edit.append(mobj)
+
+                            try:
+                                updated = core.atualizar_pratica(pid, e_disc, e_tit, e_desc or "", mats_edit)
+                                if updated:
+                                    st.success("Prática atualizada com sucesso.")
+                                    # limpar estados temporários
+                                    for k in list(st.session_state.keys()):
+                                        if str(k).startswith(f"e_mat_"):
+                                            del st.session_state[k]
+                                    del st.session_state["edit_rows"]
+                                    st.experimental_rerun()
+                                else:
+                                    st.error("Falha ao atualizar (registro não encontrado).")
+                            except Exception as e:
+                                st.error(f"Erro ao atualizar: {e}")
 
                 st.markdown("---")
                 st.subheader("Calcular materiais para um laboratório")
