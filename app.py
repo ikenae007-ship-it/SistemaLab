@@ -289,7 +289,7 @@ else:
             st.subheader("📦 Materiais e Equipamentos")
             materiais_selecionados = {}
 
-            conn = conectar()
+            conn = core.conectar()
             df_estoque = pd.read_sql_query(
                 "SELECT nome, categoria, quantidade, unidade FROM insumos WHERE id_lab = ?",
                 conn,
