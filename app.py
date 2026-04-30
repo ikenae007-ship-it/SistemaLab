@@ -428,6 +428,12 @@ else:
         if "praticas_rows" not in st.session_state:
             st.session_state.praticas_rows = [0]
 
+        # Botão para adicionar linhas fora do form (st.button não é permitido dentro de st.form)
+        col_add_top, _ = st.columns([1, 3])
+        if col_add_top.button("➕ Adicionar material"):
+            st.session_state.praticas_rows.append(max(st.session_state.praticas_rows + [0]) + 1)
+            st.experimental_rerun()
+
         with st.form("form_nova_pratica"):
             col_a, col_b = st.columns(2)
             with col_a:
@@ -437,29 +443,22 @@ else:
                 nova_desc = st.text_area("Descrição", height=80)
 
             st.markdown("**Materiais (adicione linhas conforme necessário)**")
-            to_delete = None
             for i in st.session_state.praticas_rows:
-                cols = st.columns([3, 1, 1, 1, 0.5])
+                cols = st.columns([3, 1, 1, 1, 0.8])
                 nome = cols[0].text_input("Nome do material", key=f"mat_nome_{i}")
                 unidade = cols[1].text_input("Unidade", value="un", key=f"mat_un_{i}")
                 por = cols[2].selectbox("Por", ["aluno", "bancada"], key=f"mat_por_{i}")
                 q_al = cols[3].number_input("Qtd/Aluno", min_value=0.0, value=0.0, key=f"mat_qal_{i}")
-                if cols[4].button("🗑️", key=f"mat_del_{i}"):
-                    to_delete = i
+                # usar checkbox para marcar remoção dentro do form
+                cols[4].checkbox("Remover", key=f"mat_rem_{i}")
 
-            if to_delete is not None:
-                st.session_state.praticas_rows.remove(to_delete)
-                st.experimental_rerun()
-
-            col_add, col_submit = st.columns([1, 1])
-            if col_add.button("➕ Adicionar material"):
-                st.session_state.praticas_rows.append(max(st.session_state.praticas_rows + [0]) + 1)
-                st.experimental_rerun()
-
-            if col_submit.form_submit_button("Salvar Prática"):
+            if st.form_submit_button("Salvar Prática"):
                 # coletar materiais
                 mats = []
+                new_rows = []
                 for i in st.session_state.praticas_rows:
+                    if st.session_state.get(f"mat_rem_{i}"):
+                        continue
                     nome = st.session_state.get(f"mat_nome_{i}", "").strip()
                     if not nome:
                         continue
@@ -472,6 +471,10 @@ else:
                     else:
                         mat["qtd_por_bancada"] = float(q_al)
                     mats.append(mat)
+                    new_rows.append(i)
+
+                # atualizar rows para remover as marcadas
+                st.session_state.praticas_rows = new_rows or [0]
 
                 if not nova_disc or not novo_tit:
                     st.error("Disciplina e Título são obrigatórios.")
@@ -482,10 +485,10 @@ else:
                         core.criar_pratica(nova_disc, novo_tit, nova_desc or "", mats)
                         st.success("Prática criada com sucesso.")
                         # resetar campos
-                        st.session_state.praticas_rows = [0]
                         for k in list(st.session_state.keys()):
                             if str(k).startswith("mat_"):
                                 del st.session_state[k]
+                        st.session_state.praticas_rows = [0]
                         st.experimental_rerun()
                     except Exception as e:
                         st.error(f"Falha ao salvar prática: {e}")
@@ -570,6 +573,12 @@ else:
                     if "edit_rows" not in st.session_state:
                         st.session_state.edit_rows = [i for i, _ in enumerate(p.get("materiais", []) or [0])]
 
+                    # botão para adicionar linhas (fora do form)
+                    col_add_edit, _ = st.columns([1, 3])
+                    if col_add_edit.button("➕ Adicionar material (edição)"):
+                        st.session_state.edit_rows.append(max(st.session_state.edit_rows + [0]) + 1)
+                        st.experimental_rerun()
+
                     with st.form(f"form_edit_pratica_{pid}"):
                         col1, col2 = st.columns(2)
                         with col1:
@@ -579,30 +588,22 @@ else:
                             e_desc = st.text_area("Descrição", value=p.get("descricao") or "", height=80)
 
                         # materiais editáveis
-                        to_del = None
                         for i in st.session_state.edit_rows:
                             mat = (p.get("materiais") or [])[i] if i < len(p.get("materiais") or []) else {}
-                            cols = st.columns([3, 1, 1, 1, 0.5])
+                            cols = st.columns([3, 1, 1, 1, 0.8])
                             name_m = cols[0].text_input("Nome", value=mat.get("nome", ""), key=f"e_mat_nome_{pid}_{i}")
                             unit_m = cols[1].text_input("Unidade", value=mat.get("unidade", "un"), key=f"e_mat_un_{pid}_{i}")
                             por_m = cols[2].selectbox("Por", ["aluno", "bancada"], index=0 if mat.get("por","aluno")=="aluno" else 1, key=f"e_mat_por_{pid}_{i}")
                             q_m = cols[3].number_input("Qtd", min_value=0.0, value=float(mat.get("qtd_por_aluno") or mat.get("qtd_por_bancada") or 0.0), key=f"e_mat_q_{pid}_{i}")
-                            if cols[4].button("🗑️", key=f"e_mat_del_{pid}_{i}"):
-                                to_del = i
+                            # checkbox para marcar remoção
+                            cols[4].checkbox("Remover", key=f"e_mat_rem_{pid}_{i}")
 
-                        if to_del is not None:
-                            st.session_state.edit_rows.remove(to_del)
-                            st.experimental_rerun()
-
-                        col_a, col_b = st.columns([1, 1])
-                        if col_a.button("➕ Adicionar material (edição)"):
-                            st.session_state.edit_rows.append(max(st.session_state.edit_rows + [0]) + 1)
-                            st.experimental_rerun()
-
-                        if col_b.form_submit_button("Salvar alterações"):
+                        if st.form_submit_button("Salvar alterações"):
                             # coletar materiais editados
                             mats_edit = []
                             for i in st.session_state.edit_rows:
+                                if st.session_state.get(f"e_mat_rem_{pid}_{i}"):
+                                    continue
                                 nm = st.session_state.get(f"e_mat_nome_{pid}_{i}", "").strip()
                                 if not nm:
                                     continue
@@ -624,7 +625,8 @@ else:
                                     for k in list(st.session_state.keys()):
                                         if str(k).startswith(f"e_mat_"):
                                             del st.session_state[k]
-                                    del st.session_state["edit_rows"]
+                                    if "edit_rows" in st.session_state:
+                                        del st.session_state["edit_rows"]
                                     st.experimental_rerun()
                                 else:
                                     st.error("Falha ao atualizar (registro não encontrado).")
