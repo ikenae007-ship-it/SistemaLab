@@ -182,6 +182,9 @@ else:
             if st.button("Abrir Gestão Geral", use_container_width=True):
                 st.session_state.pagina = "gestao_coordenador"
                 st.rerun()
+            if st.button("Repositório de Práticas", use_container_width=True):
+                st.session_state.pagina = "repo_praticas"
+                st.rerun()
 
         elif perfil == "Professor":
             with st.container(border=True):
@@ -396,6 +399,83 @@ else:
 
                         st.session_state.pagina = "home"
                         st.rerun()
+
+    # ========================================================
+    # REPOSITÓRIO DE PRÁTICAS
+    # ========================================================
+    elif st.session_state.pagina == "repo_praticas":
+        st.header("📚 Repositório de Práticas")
+
+        col_u, col_v = st.columns([3, 1])
+        with col_u:
+            st.subheader("Práticas Cadastradas")
+            praticas = core.listar_praticas()
+            if praticas:
+                df_pr = pd.DataFrame(praticas)
+                st.dataframe(df_pr, use_container_width=True, hide_index=True)
+                sel = st.selectbox("Escolha uma prática para ver detalhes:", ["-- Nenhuma --"] + [f"{p['id']} - {p['titulo']} ({p['disciplina']})" for p in praticas])
+            else:
+                st.info("Nenhuma prática cadastrada ainda.")
+                sel = "-- Nenhuma --"
+
+        with col_v:
+            if st.button("Voltar", use_container_width=True):
+                st.session_state.pagina = "home"
+                st.rerun()
+
+        st.divider()
+
+        # Upload de arquivos (CSV/JSON)
+        st.subheader("Importar práticas (CSV / JSON)")
+        uploaded = st.file_uploader("Escolha um arquivo .csv ou .json", type=["csv", "json"])
+        if uploaded is not None:
+            content = uploaded.getvalue()
+            try:
+                n = core.importar_praticas_arquivo(content, uploaded.name)
+                st.success(f"Importadas {n} práticas com sucesso.")
+            except Exception as e:
+                st.error(f"Falha ao importar: {e}")
+
+        st.divider()
+
+        # Visualizar prática selecionada
+        if sel != "-- Nenhuma --":
+            pid = int(sel.split(" - ")[0])
+            p = core.obter_pratica(pid)
+            if p:
+                st.subheader(f"{p['titulo']} — {p['disciplina']}")
+                st.write(p.get("descricao", ""))
+                st.markdown("**Materiais (lista):**")
+                st.write(p.get("materiais", []))
+
+                st.markdown("---")
+                st.subheader("Calcular materiais para um laboratório")
+                conn = core.conectar()
+                df_labs = pd.read_sql_query("SELECT id, nome FROM laboratorios WHERE status_lab = 'Ativo'", conn)
+                conn.close()
+                if df_labs.empty:
+                    st.warning("Nenhum laboratório ativo cadastrado.")
+                else:
+                    lab_opts = {row['nome']: row['id'] for _, row in df_labs.iterrows()}
+                    lab_sel = st.selectbox("Escolha o laboratório:", ["-- Selecione --"] + list(lab_opts.keys()))
+                    qtd_alunos = st.number_input("Quantidade de alunos", min_value=1, value=1)
+                    if lab_sel != "-- Selecione --":
+                        if st.button("Calcular materiais", use_container_width=True):
+                            id_lab_calc = lab_opts[lab_sel]
+                            try:
+                                resultado = core.calcular_materiais_pratica(pid, id_lab_calc, int(qtd_alunos))
+                                df_res = pd.DataFrame(resultado)
+                                # comparar com estoque
+                                conn = core.conectar()
+                                df_stock = pd.read_sql_query("SELECT nome, quantidade, unidade FROM insumos WHERE id_lab = ?", conn, params=(id_lab_calc,))
+                                conn.close()
+                                if not df_stock.empty:
+                                    df_res = df_res.merge(df_stock, left_on='nome', right_on='nome', how='left', suffixes=("", "_estoque"))
+                                st.dataframe(df_res[['nome','quantidade_necessaria','unidade','quantidade']], use_container_width=True)
+                            except Exception as e:
+                                st.error(f"Erro ao calcular: {e}")
+
+        st.write("\n")
 
     # ========================================================
     # PÁGINA COORDENADOR

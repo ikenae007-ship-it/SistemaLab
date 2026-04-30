@@ -9,6 +9,9 @@ import hmac
 import logging
 
 import pandas as pd
+import csv
+import math
+import io
 
 
 # Logging
@@ -101,8 +104,37 @@ def criar_tabelas():
         """
     )
 
+    # tabela de práticas (repositório de roteiros)
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS praticas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            disciplina TEXT,
+            titulo TEXT,
+            descricao TEXT,
+            materiais TEXT,
+            criado_em TEXT DEFAULT (date('now'))
+        )
+        """
+    )
+
     conn.commit()
+    # garantir colunas adicionais em laboratorios (migração suave)
+    _ensure_lab_columns(conn)
+
     conn.close()
+
+
+def _ensure_lab_columns(conn: sqlite3.Connection):
+    # garante que as colunas `bancadas` e `alunos_por_bancada` existam
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(laboratorios)")
+    cols = [r[1] for r in cur.fetchall()]
+    if "bancadas" not in cols:
+        cur.execute("ALTER TABLE laboratorios ADD COLUMN bancadas INTEGER DEFAULT 1")
+    if "alunos_por_bancada" not in cols:
+        cur.execute("ALTER TABLE laboratorios ADD COLUMN alunos_por_bancada INTEGER DEFAULT 1")
+    conn.commit()
 
 
 def verificar_conflito(id_lab, data, h_inicio, h_fim):
@@ -336,6 +368,140 @@ def obter_detalhes_materiais(id_agendamento):
         )
 
     return todos_itens
+
+
+def criar_pratica(disciplina: str, titulo: str, descricao: str, materiais: list):
+    """Grava uma prática (materiais é uma lista de dicts conforme schema)."""
+    with conectar() as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO praticas (disciplina, titulo, descricao, materiais) VALUES (?,?,?,?)",
+            (disciplina, titulo, descricao, json.dumps(materiais, ensure_ascii=False)),
+        )
+        return c.lastrowid
+
+
+def listar_praticas():
+    conn = conectar()
+    df = pd.read_sql_query("SELECT id, disciplina, titulo, criado_em FROM praticas ORDER BY criado_em DESC", conn)
+    conn.close()
+    return df.to_dict(orient="records")
+
+
+def obter_pratica(id_pratica: int):
+    conn = conectar()
+    df = pd.read_sql_query("SELECT * FROM praticas WHERE id = ?", conn, params=(id_pratica,))
+    conn.close()
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    try:
+        row["materiais"] = json.loads(row["materiais"]) if row.get("materiais") else []
+    except Exception:
+        try:
+            row["materiais"] = ast.literal_eval(row.get("materiais") or "[]")
+        except Exception:
+            row["materiais"] = []
+    return row
+
+
+def importar_praticas_arquivo(file_bytes: bytes, filename: str = None):
+    """Importa práticas a partir de JSON (array) ou CSV (linhas por material).
+    Retorna número de práticas importadas."""
+    text = None
+    if isinstance(file_bytes, bytes):
+        try:
+            text = file_bytes.decode("utf-8")
+        except Exception:
+            text = file_bytes.decode("latin-1")
+    else:
+        text = str(file_bytes)
+
+    name = (filename or "").lower()
+    imported = 0
+    if name.endswith(".json") or text.strip().startswith("["):
+        data = json.loads(text)
+        for p in data:
+            materiais = p.get("materiais") or []
+            criar_pratica(p.get("disciplina"), p.get("titulo"), p.get("descricao", ""), materiais)
+            imported += 1
+        return imported
+
+    # CSV: agrupar por disciplina+titulo
+    f = io.StringIO(text)
+    reader = csv.DictReader(f)
+    grupos = {}
+    for r in reader:
+        key = (r.get("disciplina"), r.get("titulo"))
+        if key not in grupos:
+            grupos[key] = {"disciplina": r.get("disciplina"), "titulo": r.get("titulo"), "descricao": r.get("descricao", ""), "materiais": []}
+        mat = {
+            "nome": r.get("material_nome"),
+            "unidade": r.get("material_unidade") or "un",
+            "por": r.get("por") or "aluno",
+        }
+        try:
+            if r.get("qtd_por_aluno"):
+                mat["qtd_por_aluno"] = float(r.get("qtd_por_aluno"))
+        except Exception:
+            pass
+        try:
+            if r.get("qtd_por_bancada"):
+                mat["qtd_por_bancada"] = float(r.get("qtd_por_bancada"))
+        except Exception:
+            pass
+        grupos[key]["materiais"].append(mat)
+
+    for key, payload in grupos.items():
+        criar_pratica(payload.get("disciplina"), payload.get("titulo"), payload.get("descricao"), payload.get("materiais"))
+        imported += 1
+    return imported
+
+
+def calcular_materiais_pratica(pratica_id: int, id_lab: int, qtd_alunos: int, metodo_preferido: str = None):
+    """Calcula quantidades necessárias para uma prática no lab informado.
+    Retorna lista de dicts: nome, unidade, quantidade_necessaria, por.
+    """
+    pratica = obter_pratica(pratica_id)
+    if not pratica:
+        raise ValueError("Prática não encontrada")
+
+    materiais = pratica.get("materiais") or []
+
+    conn = conectar()
+    df = pd.read_sql_query("SELECT capacidade, bancadas, alunos_por_bancada FROM laboratorios WHERE id = ?", conn, params=(id_lab,))
+    conn.close()
+
+    if df.empty:
+        # fallback razoável
+        capacidade = None
+        bancadas = 1
+        alunos_por_bancada = 1
+    else:
+        row = df.iloc[0]
+        capacidade = int(row["capacidade"]) if pd.notna(row.get("capacidade")) else None
+        bancadas = int(row.get("bancadas") or 1)
+        alunos_por_bancada = int(row.get("alunos_por_bancada") or (capacidade // max(1, bancadas) if capacidade else 1))
+
+    resultado = []
+    for m in materiais:
+        nome = m.get("nome")
+        unidade = m.get("unidade") or "un"
+        por = m.get("por") or "aluno"
+        qtd = 0.0
+
+        if por == "bancada":
+            apb = int(m.get("alunos_por_bancada") or alunos_por_bancada or 1)
+            num_bancadas = math.ceil(qtd_alunos / max(1, apb))
+            qtd_por_bancada = float(m.get("qtd_por_bancada") or m.get("qtd_por_bancada", 1))
+            qtd = num_bancadas * qtd_por_bancada
+        else:
+            qtd_por_aluno = float(m.get("qtd_por_aluno") or m.get("qtd_por_bancada") or 1)
+            qtd = qtd_alunos * qtd_por_aluno
+
+        resultado.append({"nome": nome, "unidade": unidade, "quantidade_necessaria": qtd, "por": por})
+
+    return resultado
 
 
 def processar_baixa_estoque_real(id_agendamento, materiais_usados):
