@@ -1,0 +1,12 @@
+# Database
+sistema_lab.db
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# pytest
+.pytest_cache/
