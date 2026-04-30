@@ -423,6 +423,73 @@ else:
                 st.session_state.pagina = "home"
                 st.rerun()
 
+        # Formulário para criar nova prática (editor com linhas dinâmicas)
+        st.subheader("Criar nova prática")
+        if "praticas_rows" not in st.session_state:
+            st.session_state.praticas_rows = [0]
+
+        with st.form("form_nova_pratica"):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                nova_disc = st.text_input("Disciplina")
+                novo_tit = st.text_input("Título da prática")
+            with col_b:
+                nova_desc = st.text_area("Descrição", height=80)
+
+            st.markdown("**Materiais (adicione linhas conforme necessário)**")
+            to_delete = None
+            for i in st.session_state.praticas_rows:
+                cols = st.columns([3, 1, 1, 1, 0.5])
+                nome = cols[0].text_input("Nome do material", key=f"mat_nome_{i}")
+                unidade = cols[1].text_input("Unidade", value="un", key=f"mat_un_{i}")
+                por = cols[2].selectbox("Por", ["aluno", "bancada"], key=f"mat_por_{i}")
+                q_al = cols[3].number_input("Qtd/Aluno", min_value=0.0, value=0.0, key=f"mat_qal_{i}")
+                if cols[4].button("🗑️", key=f"mat_del_{i}"):
+                    to_delete = i
+
+            if to_delete is not None:
+                st.session_state.praticas_rows.remove(to_delete)
+                st.experimental_rerun()
+
+            col_add, col_submit = st.columns([1, 1])
+            if col_add.button("➕ Adicionar material"):
+                st.session_state.praticas_rows.append(max(st.session_state.praticas_rows + [0]) + 1)
+                st.experimental_rerun()
+
+            if col_submit.form_submit_button("Salvar Prática"):
+                # coletar materiais
+                mats = []
+                for i in st.session_state.praticas_rows:
+                    nome = st.session_state.get(f"mat_nome_{i}", "").strip()
+                    if not nome:
+                        continue
+                    unidade = st.session_state.get(f"mat_un_{i}", "un")
+                    por = st.session_state.get(f"mat_por_{i}", "aluno")
+                    q_al = st.session_state.get(f"mat_qal_{i}", 0.0)
+                    mat = {"nome": nome, "unidade": unidade, "por": por}
+                    if por == "aluno":
+                        mat["qtd_por_aluno"] = float(q_al)
+                    else:
+                        mat["qtd_por_bancada"] = float(q_al)
+                    mats.append(mat)
+
+                if not nova_disc or not novo_tit:
+                    st.error("Disciplina e Título são obrigatórios.")
+                elif not mats:
+                    st.error("Adicione ao menos um material para a prática.")
+                else:
+                    try:
+                        core.criar_pratica(nova_disc, novo_tit, nova_desc or "", mats)
+                        st.success("Prática criada com sucesso.")
+                        # resetar campos
+                        st.session_state.praticas_rows = [0]
+                        for k in list(st.session_state.keys()):
+                            if str(k).startswith("mat_"):
+                                del st.session_state[k]
+                        st.experimental_rerun()
+                    except Exception as e:
+                        st.error(f"Falha ao salvar prática: {e}")
+
         st.divider()
 
         # Upload de arquivos (CSV/JSON)
